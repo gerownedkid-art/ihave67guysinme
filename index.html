@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>People Playground - Voxel Destruction Sandbox</title>
+  <title>Euphoria Ragdoll - Anatomical Trauma Tech Demo</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body, html { width: 100%; height: 100%; overflow: hidden; background: #050508; color: #e8e8f0; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; user-select: none; }
@@ -43,20 +43,21 @@
         <div class="ammo" id="ammo">12 / 60</div>
         <div class="mode" id="xrayMode">X-RAY: OFF</div>
         <div class="count" id="dummyCount">DUMMIES: 0 | PROPS: 0 | LIQUID: WATER</div>
+        <div class="count" id="vertexCount">VERTS: 0</div>
       </div>
       <div class="hud-row hints">
         <div>WASD - Move &nbsp;|&nbsp; MOUSE - Look &nbsp;|&nbsp; LMB - Shoot / Grab</div>
         <div>1 - Pistol &nbsp;|&nbsp; 2 - Shotgun &nbsp;|&nbsp; 3 - Rifle &nbsp;|&nbsp; 4 - Sniper &nbsp;|&nbsp; 5 - SMG</div>
-        <div>N - Spawn Dummy &nbsp;|&nbsp; C - Clear Dummies &nbsp;|&nbsp; X - X-Ray &nbsp;|&nbsp; E - Grab/Wound</div>
+        <div>N - Spawn Dummy &nbsp;|&nbsp; C - Clear Dummies &nbsp;|&nbsp; X - X-Ray &nbsp;|&nbsp; E - Grab &nbsp;|&nbsp; V - Wound Hold</div>
         <div>P - Crate &nbsp;|&nbsp; B - Barrel &nbsp;|&nbsp; V - Concrete &nbsp;|&nbsp; G - Glass &nbsp;|&nbsp; M - Metal Beam</div>
         <div>L - Liquid (Ctrl+1 Water, Ctrl+2 Blood) &nbsp;|&nbsp; J - Wire Mode &nbsp;|&nbsp; K - Clear Wires</div>
-        <div>R - Reset Raggies &nbsp;|&nbsp; RMB (wire mode) - Connect &nbsp;|&nbsp; ESC - Unlock Pointer</div>
+        <div>R - Reset Raggies &nbsp;|&nbsp; RMB (wire mode) - Connect &nbsp;|&nbsp; RMB (wound mode) - Release &nbsp;|&nbsp; ESC - Unlock Pointer</div>
       </div>
     </div>
     <div id="crosshair"></div>
     <div id="overlay">
       <h1>VOXEL DESTRUCTION</h1>
-      <p>People Playground-inspired sandbox &bull; destructible voxel maps &bull; ragdoll trauma &bull; liquids &bull; wire machines</p>
+      <p>High-vertex anatomical ragdoll &bull; skeletal + organ trauma &bull; X-ray mode &bull; wound holding &bull; procedural gore &bull; voxel destruction</p>
       <button id="startBtn">ENTER SIMULATION</button>
       <button id="dlBtn" style="margin-top:10px;padding:10px 26px;background:#1a1a2e;color:#00d9ff;border:2px solid #00d9ff;text-transform:uppercase;letter-spacing:0.12em;cursor:pointer;font-size:0.9rem;">DOWNLOAD GAME</button>
     </div>

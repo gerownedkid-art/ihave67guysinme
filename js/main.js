@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { createWorld } from './world.js';
-import { Dummy } from './dummy.js';
+import { AnatomicalDummy } from './anatomical.js';
 import { Weapon, castShots, spawnMuzzleFlash, spawnShellEject, WEAPONS } from './weapons.js';
 import { VoxelWorld, VOXEL } from './voxel.js';
 import { LiquidSystem } from './liquid.js';
@@ -26,6 +26,7 @@ const props = [];
 let pointerLocked = false;
 let isXray = false;
 let grabMode = false;
+let woundMode = false;
 let buildWire = false;
 let liquidType = 'water';
 const wireAnchors = [];
@@ -61,6 +62,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyC') clearDummies();
   if (e.code === 'KeyX') toggleXray();
   if (e.code === 'KeyE') toggleGrab();
+  if (e.code === 'KeyV' && !e.shiftKey) toggleWoundMode();
   if (e.code === 'KeyR' && !e.ctrlKey) resetRagdolls();
   if (e.code === 'Digit1') weapon.setType('pistol');
   if (e.code === 'Digit2') weapon.setType('shotgun');
@@ -85,11 +87,14 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 window.addEventListener('mousedown', e => {
   if (!pointerLocked) return;
   if (e.button === 0) {
-    if (grabMode) grabUnderCrosshair();
+    if (woundMode) grabWoundUnderCrosshair();
+    else if (grabMode) grabUnderCrosshair();
     else if (buildWire) placeWireAnchor();
     else fireWeapon();
   } else if (e.button === 2 && buildWire) {
     connectLastWire();
+  } else if (e.button === 2 && woundMode) {
+    releaseWound();
   }
 });
 
@@ -106,7 +111,7 @@ function spawnDummy() {
   const dist = 3 + Math.random() * 4;
   const x = playerPos.x + Math.sin(angle) * dist;
   const z = playerPos.z + Math.cos(angle) * dist;
-  const d = new Dummy(scene, x, 0.6, z);
+  const d = new AnatomicalDummy(scene, x, 0.6, z);
   trauma.registerDummy(d);
   dummies.push(d);
   updateHUD();
@@ -117,6 +122,8 @@ function clearDummies() {
   dummies.length = 0;
   updateHUD();
 }
+
+function toggleWoundMode() { woundMode = !woundMode; updateHUD(); }
 
 function spawnProp(type) {
   const angle = Math.random() * Math.PI * 2;
@@ -244,8 +251,31 @@ function grabUnderCrosshair() {
 function releaseGrab() {
   dummies.forEach(d => d.release());
   props.forEach(p => { p._grabbing = false; p._grabTarget = null; });
+  dummies.forEach(d => d.releaseWound());
 }
 window.addEventListener('mouseup', e => { if (e.button === 0) releaseGrab(); });
+
+function grabWoundUnderCrosshair() {
+  const raycaster = new THREE.Raycaster();
+  raycaster.ray.origin.copy(camera.position);
+  camera.getWorldDirection(raycaster.ray.direction);
+  let best = null, md = 0.6;
+  dummies.forEach(d => {
+    const hit = d.grabWound(new THREE.Vector3().copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, 5));
+    // ray-distance fallback: check wounds directly
+    d.wounds.forEach(w => {
+      const dist = raycaster.ray.distanceToPoint(w.pos);
+      if (dist < md && w.open && !w.held) { md = dist; best = { dummy: d, wound: w }; }
+    });
+  });
+  if (best) {
+    const worldPos = new THREE.Vector3().copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, 5);
+    best.dummy.grabWound(worldPos);
+    // re-grab at the wound position
+    best.dummy.woundGrab.target = best.wound.pos.clone();
+  }
+}
+function releaseWound() { dummies.forEach(d => d.releaseWound()); }
 
 function fireWeapon() {
   const now = performance.now();
@@ -300,6 +330,7 @@ function updatePlayer(dt) {
 
 const clock = new THREE.Clock();
 let wireLine = null;
+const woundTarget = new THREE.Vector3();
 
 function animate() {
   requestAnimationFrame(animate);
@@ -308,11 +339,17 @@ function animate() {
   weapon.update(dt);
   updatePlayer(dt);
 
+  // compute crosshair wound target (10 units ahead of camera)
+  if (woundMode) {
+    const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    woundTarget.copy(camera.position).addScaledVector(dir, 10);
+  }
+
   voxelWorld.update();
   water.step(dt);
   bloodLiquid.step(dt);
 
-  dummies.forEach(d => d.step(dt));
+  dummies.forEach(d => d.step(dt, woundMode ? woundTarget : null));
   props.forEach(p => {
     p.step(dt);
     if (p._grabbing && p._grabTarget) {
@@ -346,6 +383,9 @@ function updateHUD() {
   UI.ammo.textContent = weapon.getAmmoText();
   UI.xrayMode.textContent = `X-RAY: ${isXray ? 'ON' : 'OFF'}`;
   UI.dummyCount.textContent = `DUMMIES: ${dummies.length} | PROPS: ${props.length} | LIQUID: ${liquidType.toUpperCase()}`;
+  const vcount = dummies.reduce((s, d) => s + (d.vertexCount || 0), 0);
+  const vcEl = document.getElementById('vertexCount');
+  if (vcEl) vcEl.textContent = `VERTS: ${vcount.toLocaleString()}`;
 }
 
 // ---------- start ----------
