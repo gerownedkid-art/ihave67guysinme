@@ -1,0 +1,184 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body, html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #050508;
+  color: #e8e8f0;
+  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+}
+
+#glcanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#ui {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px;
+}
+
+#overlay {
+  pointer-events: auto;
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 4, 8, 0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  z-index: 50;
+  border: 1px solid rgba(120, 120, 160, 0.35);
+}
+
+#overlay.hidden {
+  display: none;
+}
+
+.hidden { display: none !important; }
+
+#overlay h1 {
+  font-size: 2.2rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #ff4d4d;
+  margin-bottom: 8px;
+  text-shadow: 0 0 20px rgba(255, 77, 77, 0.35);
+}
+
+#overlay p {
+  color: #b8b8d0;
+  max-width: 560px;
+  margin: 6px 0 22px 0;
+  line-height: 1.6;
+  font-size: 1.05rem;
+}
+
+#startBtn {
+  pointer-events: auto;
+  background: #1a1a2e;
+  color: #ff4d4d;
+  border: 2px solid #ff4d4d;
+  padding: 14px 40px;
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+#startBtn:hover {
+  background: #ff4d4d;
+  color: #0a0a0f;
+  box-shadow: 0 0 30px rgba(255, 77, 77, 0.6);
+}
+
+#crosshair {
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+}
+
+#crosshair::after, #crosshair::before {
+  content: '';
+  position: absolute;
+  background: rgba(255, 255, 255, 0.5);
+}
+#crosshair::after {
+  top: 50%; left: 50%; width: 2px; height: 10px;
+  transform: translate(-50%, -50%);
+}
+#crosshair::before {
+  top: 50%; left: 50%; width: 10px; height: 2px;
+  transform: translate(-50%, -50%);
+}
+
+.hud {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.hud-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.hud-row div {
+  font-size: 0.85rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8a8aa0;
+  font-weight: 600;
+  text-shadow: 0 0 10px rgba(0,0,0,0.8);
+}
+
+#weaponName { color: #ff4d4d; }
+#ammo { color: #ffd166; }
+#xrayMode { color: #00d9ff; }
+#dummyCount { color: #b8b8d0; }
+
+.hints {
+  margin-top: 10px;
+  font-size: 0.72rem;
+  color: #5a5a6e;
+  letter-spacing: 0.06em;
+  line-height: 1.7;
+}
+
+.note {
+  margin-top: 14px;
+  font-size: 0.8rem;
+  color: #6a6a80;
+  font-style: italic;
+}
+
+.lock-hint {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ff4d4d;
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+  opacity: 0.85;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 768px) {
+  #overlay h1 { font-size: 1.5rem; }
+  .hud-row div { font-size: 0.7rem; }
+}

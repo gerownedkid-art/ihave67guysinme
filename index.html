@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Euphoria Ragdoll - Surgical Trauma Tech Demo</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="ui">
+    <div class="lock-hint" id="lockHint">CLICK TO LOCK POINTER</div>
+    <div class="hud">
+      <div class="hud-row">
+        <div class="weapon">WEAPON: <span id="weaponName">PISTOL</span></div>
+        <div class="ammo" id="ammo">12 / 60</div>
+        <div class="mode" id="xrayMode">X-RAY: OFF</div>
+        <div class="count" id="dummyCount">DUMMIES: 0</div>
+      </div>
+      <div class="hud-row hints">
+        <div>WASD - Move &nbsp;|&nbsp; MOUSE - Look &nbsp;|&nbsp; LMB - Shoot</div>
+        <div>1 - Pistol &nbsp;|&nbsp; 2 - Shotgun &nbsp;|&nbsp; N - Spawn Dummy</div>
+        <div>C - Clear Dummies &nbsp;|&nbsp; X - X-Ray Mode &nbsp;|&nbsp; E - Grab / Hold Wound</div>
+        <div>R - Reset Ragdoll &nbsp;|&nbsp; ESC - Pointer Lock</div>
+      </div>
+    </div>
+    <div id="crosshair"></div>
+    <div id="overlay" class="hidden">
+      <h1>EUPHORIA RAGDOLL</h1>
+      <p>Surgical Trauma &amp; Medical Education Tech Demo</p>
+      <p>Anatomically accurate organ damage &bull; procedural gore &bull; mesh deformation &bull; ragdoll physics</p>
+      <button id="startBtn">ENTER SIMULATION</button>
+      <div class="note">High-poly anatomical dummies (250k+ vertices). WebGL required.</div>
+    </div>
+  </div>
+
+  <canvas id="glcanvas"></canvas>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
