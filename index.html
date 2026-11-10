@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Euphoria Ragdoll - Surgical Trauma Tech Demo</title>
+  <title>People Playground - Voxel Destruction Sandbox</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body, html { width: 100%; height: 100%; overflow: hidden; background: #050508; color: #e8e8f0; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; user-select: none; }
@@ -42,23 +42,22 @@
         <div class="weapon">WEAPON: <span id="weaponName">PISTOL</span></div>
         <div class="ammo" id="ammo">12 / 60</div>
         <div class="mode" id="xrayMode">X-RAY: OFF</div>
-        <div class="count" id="dummyCount">DUMMIES: 0</div>
+        <div class="count" id="dummyCount">DUMMIES: 0 | PROPS: 0 | LIQUID: WATER</div>
       </div>
       <div class="hud-row hints">
-        <div>WASD - Move &nbsp;|&nbsp; MOUSE - Look &nbsp;|&nbsp; LMB - Shoot</div>
-        <div>1 - Pistol &nbsp;|&nbsp; 2 - Shotgun &nbsp;|&nbsp; N - Spawn Dummy</div>
-        <div>C - Clear Dummies &nbsp;|&nbsp; X - X-Ray Mode &nbsp;|&nbsp; E - Grab / Hold Wound</div>
-        <div>R - Reset Ragdoll &nbsp;|&nbsp; ESC - Pointer Lock</div>
+        <div>WASD - Move &nbsp;|&nbsp; MOUSE - Look &nbsp;|&nbsp; LMB - Shoot / Grab</div>
+        <div>1 - Pistol &nbsp;|&nbsp; 2 - Shotgun &nbsp;|&nbsp; 3 - Rifle &nbsp;|&nbsp; 4 - Sniper &nbsp;|&nbsp; 5 - SMG</div>
+        <div>N - Spawn Dummy &nbsp;|&nbsp; C - Clear Dummies &nbsp;|&nbsp; X - X-Ray &nbsp;|&nbsp; E - Grab/Wound</div>
+        <div>P - Crate &nbsp;|&nbsp; B - Barrel &nbsp;|&nbsp; V - Concrete &nbsp;|&nbsp; G - Glass &nbsp;|&nbsp; M - Metal Beam</div>
+        <div>L - Liquid (Ctrl+1 Water, Ctrl+2 Blood) &nbsp;|&nbsp; J - Wire Mode &nbsp;|&nbsp; K - Clear Wires</div>
+        <div>R - Reset Raggies &nbsp;|&nbsp; RMB (wire mode) - Connect &nbsp;|&nbsp; ESC - Unlock Pointer</div>
       </div>
     </div>
     <div id="crosshair"></div>
-    <div id="overlay" class="hidden">
-      <h1>EUPHORIA RAGDOLL</h1>
-      <p>Surgical Trauma &amp; Medical Education Tech Demo</p>
-      <p>Anatomically accurate organ damage &bull; procedural gore &bull; mesh deformation &bull; ragdoll physics</p>
+    <div id="overlay">
+      <h1>VOXEL DESTRUCTION</h1>
+      <p>People Playground-inspired sandbox &bull; destructible voxel maps &bull; ragdoll trauma &bull; liquids &bull; wire machines</p>
       <button id="startBtn">ENTER SIMULATION</button>
-      <button id="dlBtn" style="margin-top:10px;padding:10px 26px;background:#1a1a2e;color:#00d9ff;border:2px solid #00d9ff;text-transform:uppercase;letter-spacing:0.12em;cursor:pointer;font-size:0.9rem;">DOWNLOAD SIMULATION</button>
-      <div class="note">High-poly anatomical dummies (250k+ vertices). WebGL required.</div>
     </div>
   </div>
   <canvas id="glcanvas"></canvas>
@@ -72,6 +71,1613 @@
     }
   </script>
 
-  <script type="module" src="./js/main.js"></script>
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ================= ragdoll.js =================
+    const GRAVITY = new THREE.Vector3(0, -28, 0);
+    const FRICTION = 0.998;
+    const GROUND_BOUNCE = 0.25;
+    const SOLVER_ITERS = 10;
+
+    class BodyPart {
+      constructor(type, pos, radius, mass, color) {
+        this.type = type;
+        this.pos = pos.clone();
+        this.prevPos = pos.clone();
+        this.radius = radius;
+        this.invMass = mass > 0 ? 1 / mass : 0;
+        this.color = color;
+        this.mesh = null;
+        this.impulse = new THREE.Vector3();
+      }
+      integrate(dt) {
+        if (this.invMass === 0) return;
+        const vel = new THREE.Vector3().subVectors(this.pos, this.prevPos).multiplyScalar(FRICTION);
+        this.prevPos.copy(this.pos);
+        this.pos.addScaledVector(vel, dt);
+        this.pos.addScaledVector(GRAVITY, dt * dt);
+        this.pos.addScaledVector(this.impulse, dt * dt * this.invMass);
+        this.impulse.set(0, 0, 0);
+      }
+      applyImpulse(vec) { this.impulse.add(vec); }
+    }
+
+    class Constraint {
+      constructor(a, b, restLength, stiffness = 1.0) {
+        this.a = a; this.b = b; this.restLength = restLength; this.stiffness = stiffness; this.broken = false;
+      }
+      solve() {
+        if (this.broken || (!this.a.invMass && !this.b.invMass)) return;
+        const delta = new THREE.Vector3().subVectors(this.b.pos, this.a.pos);
+        const dist = delta.length();
+        if (dist === 0) return;
+        const diff = (dist - this.restLength) / dist;
+        const totalInvMass = this.a.invMass + this.b.invMass;
+        const offset = delta.clone().multiplyScalar(diff * this.stiffness / totalInvMass);
+        if (this.a.invMass > 0) this.a.pos.sub(offset.multiplyScalar(this.a.invMass));
+        if (this.b.invMass > 0) this.b.pos.add(offset.multiplyScalar(this.b.invMass));
+      }
+      break() { this.broken = true; }
+    }
+
+    class Ragdoll {
+      constructor() {
+        this.parts = []; this.constraints = []; this.root = null;
+      }
+      addPart(part) { this.parts.push(part); return part; }
+      addConstraint(a, b, restLength, stiffness) {
+        const c = new Constraint(a, b, restLength, stiffness); this.constraints.push(c); return c;
+      }
+      integrate(dt) { this.parts.forEach(p => p.integrate(dt)); }
+      solveConstraints() { this.constraints.forEach(c => c.solve()); }
+      resolveGround(yLimit = 0.3) {
+        this.parts.forEach(p => {
+          if (p.pos.y < yLimit - p.radius) {
+            p.pos.y = yLimit - p.radius;
+            const vel = new THREE.Vector3().subVectors(p.pos, p.prevPos);
+            vel.y = Math.abs(vel.y) * GROUND_BOUNCE;
+            vel.x *= 0.5; vel.z *= 0.5;
+            p.prevPos.copy(p.pos).sub(vel);
+          }
+        });
+      }
+      applyImpulseAt(point, dir, strength) {
+        let nearest = null; let minDist = Infinity;
+        this.parts.forEach(p => { const d = point.distanceTo(p.pos); if (d < minDist) { minDist = d; nearest = p; } });
+        const falloff = 1.6;
+        this.parts.forEach(p => {
+          const d = point.distanceTo(p.pos); const w = Math.max(0, 1 - d / falloff);
+          if (w > 0 && p.invMass > 0) p.applyImpulse(dir.clone().multiplyScalar(strength * w * p.invMass));
+        });
+      }
+      getPartAt(point) {
+        let nearest = null; let minDist = Infinity;
+        this.parts.forEach(p => { const d = point.distanceTo(p.pos); if (d < minDist) { minDist = d; nearest = p; } });
+        return nearest;
+      }
+      step(dt) {
+        this.integrate(dt);
+        for (let i = 0; i < SOLVER_ITERS; i++) this.solveConstraints();
+        this.resolveGround();
+      }
+      getPart(type) { return this.parts.find(p => p.type === type); }
+    }
+
+    // ================= dummy.js =================
+    const FLESH = 0xe0b088;
+    const FLESH_DARK = 0xc49a70;
+    const BONE = 0xeae8e0;
+    const ORGAN_COLORS = { heart: 0xb22222, lung: 0x7a2e2e, liver: 0x8b2e2e, stomach: 0x6b3a2e, intestine: 0x8f4a2e, brain: 0xcfc0b0 };
+
+    function mat(color, opts = {}) {
+      return new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.85, metalness: 0.1, flatShading: false }, opts));
+    }
+    function boneMat() { return new THREE.MeshStandardMaterial({ color: BONE, roughness: 0.6, metalness: 0.05 }); }
+    function createCapsule(radius, height, radialSegs, heightSegs, color) {
+      const geo = new THREE.CapsuleGeometry(radius, height, radialSegs, heightSegs);
+      const mesh = new THREE.Mesh(geo, mat(color));
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      return mesh;
+    }
+    function createSphere(radius, wSeg, hSeg, color, wire = false) {
+      const geo = new THREE.SphereGeometry(radius, wSeg, hSeg);
+      const m = mat(color);
+      if (wire) m.wireframe = true;
+      const mesh = new THREE.Mesh(geo, m);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      return mesh;
+    }
+    function countVertices(mesh) {
+      const g = mesh.geometry;
+      return g.attributes.position ? g.attributes.position.count : 0;
+    }
+
+    function buildHeart() {
+      const g = new THREE.Group();
+      const a = createSphere(0.16, 36, 36, ORGAN_COLORS.heart); a.position.set(0, 0.08, 0);
+      const b = createSphere(0.16, 36, 36, ORGAN_COLORS.heart); b.position.set(0, -0.08, 0);
+      const aorta = createCapsule(0.05, 0.22, 24, 16, 0x8a1a1a); aorta.position.set(0, 0.24, 0); aorta.rotation.x = -Math.PI / 2;
+      g.add(a, b, aorta);
+      return g;
+    }
+    function buildLung(side) {
+      const g = new THREE.Group();
+      const lobes = 3;
+      for (let i = 0; i < lobes; i++) {
+        const lobe = createSphere(0.14 + i * 0.03, 32, 32, ORGAN_COLORS.lung);
+        lobe.position.set(side * (0.09 + i * 0.05), 0.12 - i * 0.06, 0.05 + i * 0.04);
+        g.add(lobe);
+      }
+      return g;
+    }
+    function buildLiver() {
+      const g = new THREE.Group();
+      const main = createSphere(0.22, 44, 44, ORGAN_COLORS.liver); main.scale.set(1, 0.85, 1.1);
+      const lobe = createSphere(0.14, 36, 36, ORGAN_COLORS.liver); lobe.position.set(0.1, -0.05, 0.05);
+      g.add(main, lobe);
+      return g;
+    }
+    function buildStomach() {
+      const g = new THREE.Group();
+      const s = createSphere(0.15, 40, 40, ORGAN_COLORS.stomach); s.position.set(0.08, -0.06, 0.02);
+      g.add(s);
+      return g;
+    }
+    function buildIntestines() {
+      const g = new THREE.Group();
+      const coils = 24;
+      for (let i = 0; i < coils; i++) {
+        const t = (i / coils) * Math.PI * 4;
+        const seg = createSphere(0.045, 28, 28, ORGAN_COLORS.intestine);
+        seg.position.set(Math.sin(t) * 0.16, -0.35 + (i / coils) * 0.28, Math.cos(t) * 0.14);
+        seg.scale.set(1, 0.6, 1);
+        g.add(seg);
+      }
+      return g;
+    }
+    function buildBrain() {
+      const g = new THREE.Group();
+      const b = createSphere(0.155, 64, 64, ORGAN_COLORS.brain); b.scale.set(1, 0.85, 1.1);
+      const stem = createCapsule(0.04, 0.16, 28, 20, 0xa89080); stem.position.set(0, -0.23, 0); stem.rotation.x = Math.PI / 2;
+      g.add(b, stem);
+      return g;
+    }
+    function buildBone(len, rad) {
+      const g = new THREE.Group();
+      const bone = createCapsule(rad, len, 28, 20, BONE); bone.position.y = len / 2;
+      g.add(bone);
+      return g;
+    }
+    function buildSkull() {
+      const g = new THREE.Group();
+      const cranium = createSphere(0.17, 56, 56, BONE);
+      const jaw = createSphere(0.11, 40, 40, BONE); jaw.position.set(0, -0.13, 0.06); jaw.scale.set(1, 0.7, 1.05);
+      g.add(cranium, jaw);
+      return g;
+    }
+    function buildRibcage() {
+      const g = new THREE.Group();
+      const sternum = createCapsule(0.035, 0.42, 24, 16, BONE); sternum.position.y = 0.05;
+      g.add(sternum);
+      for (let i = 0; i < 6; i++) {
+        const y = 0.18 - i * 0.075;
+        const left = createCapsule(0.02, 0.5, 20, 14, BONE); left.position.set(-0.13, y, 0.02); left.rotation.z = -0.35 - i * 0.04;
+        const right = left.clone(); right.position.x = 0.13; right.rotation.z = 0.35 + i * 0.04;
+        g.add(left, right);
+      }
+      return g;
+    }
+    function buildPelvis() {
+      const g = new THREE.Group();
+      const bowl = createSphere(0.17, 48, 48, BONE); bowl.scale.set(1.1, 0.5, 1.25); bowl.position.y = -0.02;
+      const left = createCapsule(0.03, 0.26, 24, 16, BONE); left.position.set(-0.16, -0.02, 0); left.rotation.z = 0.35;
+      const right = left.clone(); right.position.x = 0.16; right.rotation.z = -0.35;
+      g.add(bowl, left, right);
+      return g;
+    }
+
+    class BloodParticle {
+      constructor(pos, vel, life, color) {
+        this.pos = pos.clone(); this.vel = vel.clone(); this.life = life; this.maxLife = life; this.color = color; this.mesh = null;
+      }
+      update(dt) {
+        this.pos.addScaledVector(this.vel, dt);
+        this.vel.y += -24 * dt;
+        this.vel.multiplyScalar(0.96);
+        this.life -= dt;
+      }
+      dead() { return this.life <= 0; }
+    }
+
+    class Dummy {
+      constructor(scene, x, y, z) {
+        this.scene = scene;
+        this.group = new THREE.Group();
+        this.group.position.set(x, y, z);
+        scene.add(this.group);
+
+        this.ragdoll = new Ragdoll();
+        this.parts = {}; this.visuals = {}; this.organs = []; this.bones = [];
+        this.wounds = []; this.blood = []; this.dead = false;
+        this.xray = false; this.health = 100; this.vertexCount = 0;
+        this.grabConstraint = null; this.grabbedPart = null; this.grabPoint = new THREE.Vector3();
+        this.trauma = null;
+        this.wireConstraints = [];
+        this.build();
+        this.recalcVertexCount();
+      }
+
+      build() {
+        const g = this.group; const rd = this.ragdoll;
+        const add = (type, pos, radius, mass) => {
+          const p = new BodyPart(type, pos.clone(), radius, mass, 0);
+          rd.addPart(p); this.parts[type] = p;
+          return p;
+        };
+        const headP = add('head', new THREE.Vector3(0, 1.62, 0), 0.17, 4);
+        const torsoP = add('torso', new THREE.Vector3(0, 1.12, 0), 0.26, 12);
+        const lUA = add('lUpperArm', new THREE.Vector3(-0.34, 1.32, 0), 0.11, 3);
+        const rUA = add('rUpperArm', new THREE.Vector3(0.34, 1.32, 0), 0.11, 3);
+        const lLA = add('lLowerArm', new THREE.Vector3(-0.56, 1.04, 0), 0.1, 2.5);
+        const rLA = add('rLowerArm', new THREE.Vector3(0.56, 1.04, 0), 0.1, 2.5);
+        const lH = add('lHand', new THREE.Vector3(-0.66, 0.84, 0), 0.075, 1.5);
+        const rH = add('rHand', new THREE.Vector3(0.66, 0.84, 0), 0.075, 1.5);
+        const lULeg = add('lUpperLeg', new THREE.Vector3(-0.15, 0.62, 0), 0.14, 6);
+        const rULeg = add('rUpperLeg', new THREE.Vector3(0.15, 0.62, 0), 0.14, 6);
+        const lLLeg = add('lLowerLeg', new THREE.Vector3(-0.15, 0.26, 0), 0.12, 5);
+        const rLLeg = add('rLowerLeg', new THREE.Vector3(0.15, 0.26, 0), 0.12, 5);
+        const lFoot = add('lFoot', new THREE.Vector3(-0.15, 0.04, 0.06), 0.11, 3);
+        const rFoot = add('rFoot', new THREE.Vector3(0.15, 0.04, 0.06), 0.11, 3);
+        headP.invMass = 1 / 6;
+        const con = (a, b, len, stiff) => rd.addConstraint(a, b, len, stiff);
+        con(headP, torsoP, 0.5, 0.95);
+        con(torsoP, lULeg, 0.52, 0.9); con(torsoP, rULeg, 0.52, 0.9);
+        con(torsoP, lUA, 0.34, 0.9); con(torsoP, rUA, 0.34, 0.9);
+        con(lUA, lLA, 0.26, 0.9); con(rUA, rLA, 0.26, 0.9);
+        con(lLA, lH, 0.18, 0.9); con(rLA, rH, 0.18, 0.9);
+        con(lULeg, lLLeg, 0.38, 0.9); con(rULeg, rLLeg, 0.38, 0.9);
+        con(lLLeg, lFoot, 0.26, 0.9); con(rLLeg, rFoot, 0.26, 0.9);
+        con(lULeg, rULeg, 0.32, 0.6);
+
+        const res = { radial: 112, hseg: 70 };
+        const addVis = (type, mesh, offset = new THREE.Vector3()) => {
+          mesh.position.copy(offset); g.add(mesh); this.visuals[type] = mesh;
+          this.meshes = this.meshes || []; this.meshes.push(mesh);
+          return mesh;
+        };
+        addVis('head', createSphere(0.17, 100, 100, FLESH));
+        const torso = new THREE.Group();
+        const chest = createCapsule(0.26, 0.72, res.radial, res.hseg, FLESH); chest.position.y = 0.18;
+        const belly = createCapsule(0.24, 0.62, res.radial, res.hseg, FLESH_DARK); belly.position.y = -0.34; belly.scale.set(1, 0.9, 1);
+        torso.add(chest, belly);
+        addVis('torso', torso);
+        addVis('lUpperArm', createCapsule(0.11, 0.36, res.radial, res.hseg, FLESH));
+        addVis('rUpperArm', createCapsule(0.11, 0.36, res.radial, res.hseg, FLESH));
+        addVis('lLowerArm', createCapsule(0.10, 0.4, res.radial, res.hseg, FLESH));
+        addVis('rLowerArm', createCapsule(0.10, 0.4, res.radial, res.hseg, FLESH));
+        addVis('lHand', createSphere(0.075, 72, 72, FLESH));
+        addVis('rHand', createSphere(0.075, 72, 72, FLESH));
+        addVis('lUpperLeg', createCapsule(0.14, 0.5, res.radial, res.hseg, FLESH));
+        addVis('rUpperLeg', createCapsule(0.14, 0.5, res.radial, res.hseg, FLESH));
+        addVis('lLowerLeg', createCapsule(0.12, 0.46, res.radial, res.hseg, FLESH));
+        addVis('rLowerLeg', createCapsule(0.12, 0.46, res.radial, res.hseg, FLESH));
+        addVis('lFoot', createSphere(0.11, 72, 72, 0x3a322e));
+        addVis('rFoot', createSphere(0.11, 72, 72, 0x3a322e));
+
+        const organRoot = new THREE.Group(); organRoot.position.set(0, 0.05, 0.08); g.add(organRoot);
+        const heart = buildHeart(); heart.position.set(0, 0.14, 0.02); organRoot.add(heart);
+        this.organs.push({ mesh: heart, type: 'heart', region: 'chest', damaged: false });
+        const lLung = buildLung(-1); lLung.position.set(-0.16, 0.08, 0.04);
+        const rLung = buildLung(1); rLung.position.set(0.16, 0.08, 0.04);
+        organRoot.add(lLung, rLung);
+        this.organs.push({ mesh: lLung, type: 'lung', region: 'chest', damaged: false });
+        this.organs.push({ mesh: rLung, type: 'lung', region: 'chest', damaged: false });
+        const liver = buildLiver(); liver.position.set(0.06, -0.28, 0.02); organRoot.add(liver);
+        this.organs.push({ mesh: liver, type: 'liver', region: 'abdomen', damaged: false });
+        const stomach = buildStomach(); stomach.position.set(-0.06, -0.32, 0.02); organRoot.add(stomach);
+        this.organs.push({ mesh: stomach, type: 'stomach', region: 'abdomen', damaged: false });
+        const intestines = buildIntestines(); intestines.position.set(0, -0.42, 0.02); organRoot.add(intestines);
+        this.organs.push({ mesh: intestines, type: 'intestine', region: 'abdomen', damaged: false });
+        const brain = buildBrain(); brain.position.set(0, 1.66, 0.02); g.add(brain);
+        this.organs.push({ mesh: brain, type: 'brain', region: 'head', damaged: false });
+
+        const skelRoot = new THREE.Group(); this.skelRoot = skelRoot; g.add(skelRoot);
+        const skull = buildSkull(); skull.position.set(0, 1.66, 0);
+        const spine = new THREE.Group();
+        for (let i = 0; i < 5; i++) { const b = buildBone(0.18, 0.05); b.position.set(0, 1.0 + i * 0.17, 0); spine.add(b); }
+        const ribcage = buildRibcage(); ribcage.position.set(0, 0.9, 0.02);
+        const pelvis = buildPelvis(); pelvis.position.set(0, 0.42, 0);
+        const lArmB = buildBone(0.4, 0.045); lArmB.position.set(-0.3, 1.2, 0); lArmB.rotation.z = 0.3;
+        const rArmB = buildBone(0.4, 0.045); rArmB.position.set(0.3, 1.2, 0); rArmB.rotation.z = -0.3;
+        const lLegB = buildBone(0.55, 0.055); lLegB.position.set(-0.14, 0.55, 0); lLegB.rotation.x = 0.15;
+        const rLegB = buildBone(0.55, 0.055); rLegB.position.set(0.14, 0.55, 0); rLegB.rotation.x = -0.15;
+        skelRoot.add(skull, spine, ribcage, pelvis, lArmB, rArmB, lLegB, rLegB);
+        this.bones = []; skelRoot.traverse(c => { if (c.isMesh) this.bones.push(c); });
+        this.setXray(false);
+      }
+
+      recalcVertexCount() {
+        let total = 0;
+        this.group.traverse(c => { if (c.isMesh) total += countVertices(c); });
+        this.vertexCount = total;
+        return total;
+      }
+
+      syncVisuals() {
+        const pairs = [
+          ['head','torso'],['torso','head'],['lUpperArm','lLowerArm'],['rUpperArm','rLowerArm'],
+          ['lLowerArm','lHand'],['rLowerArm','rHand'],['lUpperLeg','lLowerLeg'],['rUpperLeg','rLowerLeg'],
+          ['lLowerLeg','lFoot'],['rLowerLeg','rFoot'],
+        ];
+        pairs.forEach(([a, b]) => {
+          const pa = this.parts[a]; const pb = this.parts[b]; const m = this.visuals[a];
+          if (!pa || !pb || !m) return;
+          m.position.copy(pa.pos); m.lookAt(pb.pos); m.rotateX(-Math.PI / 2);
+        });
+        const singles = ['lHand','rHand','lFoot','rFoot'];
+        singles.forEach(t => { const p = this.parts[t]; const m = this.visuals[t]; if (p && m) m.position.copy(p.pos); });
+        if (this.skelRoot && this.parts.torso) {
+          this.skelRoot.position.copy(this.parts.torso.pos); this.skelRoot.position.y += 0.05;
+        }
+        this.wounds.forEach(w => {
+          const p = this.ragdoll.parts.reduce((best, cur) =>
+            cur.pos.distanceTo(w.pos) < best.pos.distanceTo(w.pos) ? cur : best, this.ragdoll.parts[0]);
+          w.pos.copy(p.pos).add(w.normal.clone().multiplyScalar(p.radius + 0.02));
+          w.mesh.position.copy(w.pos); w.mesh.lookAt(w.pos.clone().add(w.normal)); w.age += 0.016;
+        });
+        this.blood.forEach(b => { if (b.mesh) b.mesh.position.copy(b.pos); });
+      }
+
+      regionFromPoint(point) {
+        const y = point.y;
+        if (y > 2.0) return 'head';
+        if (y > 1.05) return 'chest';
+        return 'abdomen';
+      }
+
+      applyDamage(hitPoint, hitNormal, damage, weaponType) {
+        if (this.dead) return;
+        this.health -= damage;
+        const dir = hitNormal.clone().multiplyScalar(-1);
+        this.ragdoll.applyImpulseAt(hitPoint, dir, damage * 14);
+        if (this.trauma) {
+          this.trauma.onHit(hitPoint, hitNormal, damage, weaponType);
+        } else {
+          const count = weaponType === 'shotgun' ? 22 : 8;
+          this.spawnBlood(hitPoint, dir, count);
+          const wound = this.createWound(hitPoint, hitNormal, damage);
+          this.wounds.push(wound); this.group.add(wound.mesh);
+          const region = this.regionFromPoint(hitPoint);
+          this.damageOrgans(region, damage, weaponType);
+        }
+        if (this.health <= 0) this.die();
+        else if (damage > 30) this.stun();
+      }
+
+      createWound(point, normal, damage) {
+        const size = 0.07 + damage * 0.006;
+        const geo = new THREE.SphereGeometry(size, 16, 16);
+        geo.applyMatrix4(new THREE.Matrix4().makeScale(1, 0.25, 1));
+        const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x4a0a0a }));
+        mesh.position.copy(point); mesh.lookAt(point.clone().add(normal)); mesh.rotateX(Math.PI / 2);
+        return { mesh, pos: point.clone(), normal: normal.clone(), age: 0, damage };
+      }
+
+      spawnBlood(origin, dir, count) {
+        for (let i = 0; i < count; i++) {
+          const spread = new THREE.Vector3((Math.random()-0.5)*0.6,(Math.random()-0.5)*0.6,(Math.random()-0.5)*0.6);
+          const vel = dir.clone().add(spread).normalize().multiplyScalar(6 + Math.random()*10);
+          const p = new BloodParticle(origin, vel, 0.5 + Math.random()*0.6, 0x6a0a0a);
+          const m = createSphere(0.035 + Math.random()*0.025, 8, 8, 0x6a0a0a);
+          m.position.copy(origin); this.group.add(m);
+          this.blood.push({ p, mesh: m });
+        }
+      }
+
+      damageOrgans(region, damage, weaponType) {
+        this.organs.forEach(o => {
+          if (o.damaged || o.region !== region) return;
+          const hitChance = weaponType === 'shotgun' ? 0.75 : 0.5;
+          if (Math.random() > hitChance * (damage / 60)) return;
+          o.damaged = true;
+          o.mesh.traverse(c => {
+            if (c.isMesh && c.material) {
+              c.material.color.setHex(0x2a0a0a);
+              c.material.emissive = new THREE.Color(0x1a0000);
+              c.material.emissiveIntensity = 0.4;
+            }
+          });
+          if ((o.type === 'brain' || o.type === 'heart') && damage > 40) this.health = 0;
+        });
+        if (region === 'abdomen' && damage > 50) {
+          const intOrgan = this.organs.find(o => o.type === 'intestine');
+          if (intOrgan && !intOrgan.damaged) {
+            intOrgan.damaged = true;
+            intOrgan.mesh.position.y -= 0.15;
+            intOrgan.mesh.scale.set(0.6, 0.6, 0.6);
+          }
+        }
+      }
+
+      stun() { this.ragdoll.applyImpulseAt(this.parts.torso.pos, new THREE.Vector3(0, 1, 0), 30); }
+      die() {
+        if (this.dead) return;
+        this.dead = true;
+        this.parts.head.invMass = 1 / 60;
+      }
+
+      setXray(enabled) {
+        this.xray = enabled;
+        const skinAlpha = enabled ? 0.18 : 1.0;
+        Object.values(this.visuals).forEach(m => {
+          if (!m) return;
+          m.traverse(c => {
+            if (c.isMesh) {
+              c.material.transparent = enabled;
+              c.material.opacity = skinAlpha;
+              if (!enabled) c.material.opacity = 1;
+            }
+          });
+        });
+        this.organs.forEach(o => {
+          o.mesh.traverse(c => {
+            if (c.isMesh && c.material) {
+              c.material.transparent = enabled;
+              c.material.opacity = enabled ? 0.85 : 1;
+              if (!enabled) { c.material.transparent = false; c.material.opacity = 1; }
+            }
+          });
+        });
+        this.bones.forEach(b => {
+          b.visible = enabled;
+          if (b.material) { b.material.transparent = enabled; b.material.opacity = enabled ? 0.9 : 0; }
+        });
+      }
+
+      grab(point) {
+        if (this.grabConstraint) return;
+        let nearest = null; let md = Infinity;
+        this.ragdoll.parts.forEach(p => { const d = point.distanceTo(p.pos); if (d < md) { md = d; nearest = p; } });
+        if (!nearest) return;
+        this.grabbedPart = nearest; this.grabPoint.copy(point);
+        this.grabConstraint = { part: nearest, target: point.clone(), stiffness: 0.5 };
+      }
+      updateGrab(target) {
+        if (!this.grabConstraint) return;
+        this.grabConstraint.target.copy(target);
+        const p = this.grabConstraint.part;
+        const dir = new THREE.Vector3().subVectors(this.grabConstraint.target, p.pos);
+        const dist = dir.length();
+        const pull = dir.normalize().multiplyScalar(Math.min(dist * 18, 40));
+        p.applyImpulse(pull);
+      }
+      release() { this.grabConstraint = null; this.grabbedPart = null; }
+      step(dt) {
+        if (!this.dead && this.grabConstraint) this.updateGrab(this.grabConstraint.target);
+        this.ragdoll.step(dt);
+        this.syncVisuals();
+        this.updateBlood(dt);
+      }
+      updateBlood(dt) {
+        for (let i = this.blood.length - 1; i >= 0; i--) {
+          const b = this.blood[i];
+          b.p.update(dt);
+          if (b.p.dead()) {
+            if (b.mesh && b.mesh.parent) b.mesh.parent.remove(b.mesh);
+            this.blood.splice(i, 1);
+          } else if (b.mesh) { b.mesh.position.copy(b.p.pos); b.mesh.scale.setScalar(b.p.life / b.p.maxLife); }
+        }
+        for (let i = this.wounds.length - 1; i >= 0; i--) {
+          const w = this.wounds[i];
+          if (w.age > 12) {
+            if (w.mesh.parent) w.mesh.parent.remove(w.mesh);
+            this.wounds.splice(i, 1);
+          }
+        }
+      }
+      dispose() {
+        this.scene.remove(this.group);
+        this.group.traverse(c => {
+          if (c.isMesh) {
+            if (c.geometry) c.geometry.dispose();
+            if (c.material) { const m = c.material; if (Array.isArray(m)) m.forEach(x => x.dispose()); else m.dispose(); }
+          }
+        });
+        this.blood.forEach(b => { if (b.mesh && b.mesh.parent) b.mesh.parent.remove(b.mesh); });
+        this.blood = [];
+        this.wounds.forEach(w => { if (w.mesh.parent) w.mesh.parent.remove(w.mesh); });
+        this.wounds = [];
+      }
+    }
+
+    // ================= weapons.js =================
+    const TEMP_RAY = new THREE.Raycaster();
+    const WEAPONS = {
+      pistol: { fireRate: 350, shots: 1, spread: 0.018, damage: 22, recoil: 0.14, ammo: 12, reserve: 60, ammoMax: 12 },
+      shotgun: { fireRate: 900, shots: 8, spread: 0.14, damage: 10, recoil: 0.35, ammo: 8, reserve: 32, ammoMax: 8 },
+      rifle: { fireRate: 150, shots: 1, spread: 0.01, damage: 30, recoil: 0.2, ammo: 30, reserve: 90, ammoMax: 30 },
+      sniper: { fireRate: 1100, shots: 1, spread: 0.004, damage: 90, recoil: 0.5, ammo: 5, reserve: 15, ammoMax: 5 },
+      smg: { fireRate: 80, shots: 1, spread: 0.05, damage: 14, recoil: 0.09, ammo: 30, reserve: 120, ammoMax: 30 },
+    };
+
+    class Weapon {
+      constructor(camera, domElement) {
+        this.camera = camera; this.dom = domElement;
+        this.type = 'pistol'; this.cfg = WEAPONS[this.type];
+        this.ammo = { pistol: 12, shotgun: 8, rifle: 30, sniper: 5, smg: 30 };
+        this.reserve = { pistol: 60, shotgun: 32, rifle: 90, sniper: 15, smg: 120 };
+        this.ammoMax = { pistol: 12, shotgun: 8, rifle: 30, sniper: 5, smg: 30 };
+        this.lastFire = 0; this.recoil = 0; this.mesh = null; this.muzzleLight = null;
+        this.buildWeaponMesh();
+      }
+      buildWeaponMesh() {
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.4), new THREE.MeshStandardMaterial({ color: 0x22222a, roughness: 0.4 }));
+        body.position.set(0.18, -0.17, -0.5); body.rotation.z = 0.15;
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.32, 12), new THREE.MeshStandardMaterial({ color: 0x1a1a1f }));
+        barrel.position.set(0.18, -0.17, -0.74); barrel.rotation.z = 0.15;
+        g.add(body, barrel);
+        this.mesh = g;
+        const light = new THREE.PointLight(0xff5500, 0, 1.4); light.position.set(0.18, -0.17, -0.8);
+        this.muzzleLight = light; g.add(light);
+        this.setType('pistol');
+      }
+      setType(type) {
+        this.type = type; this.cfg = WEAPONS[type];
+        this.mesh.visible = true; this.lastFire = 0;
+      }
+      canFire(now) { return now - this.lastFire >= this.cfg.fireRate; }
+      fire(now) {
+        if (!this.canFire(now)) return null;
+        if (this.ammo[this.type] <= 0) return null;
+        this.lastFire = now;
+        const shots = this.cfg.shots; const spread = this.cfg.spread;
+        const results = [];
+        const origin = this.camera.position.clone();
+        const forward = new THREE.Vector3(); this.camera.getWorldDirection(forward);
+        const up = new THREE.Vector3(0, 1, 0);
+        const right = new THREE.Vector3().crossVectors(forward, up).normalize();
+        up.crossVectors(right, forward);
+        for (let i = 0; i < shots; i++) {
+          const dir = forward.clone()
+            .add(right.clone().multiplyScalar((Math.random()-0.5)*spread))
+            .add(up.clone().multiplyScalar((Math.random()-0.5)*spread)).normalize();
+          results.push({ origin: origin.clone(), dir });
+        }
+        this.recoil = this.cfg.recoil;
+        this.muzzleLight.intensity = 5;
+        this.ammo[this.type] = Math.max(0, this.ammo[this.type] - shots);
+        return results;
+      }
+      reload() {
+        if (this.ammo[this.type] >= this.ammoMax[this.type]) return;
+        const need = this.ammoMax[this.type] - this.ammo[this.type];
+        const take = Math.min(need, this.reserve[this.type]);
+        this.ammo[this.type] += take; this.reserve[this.type] -= take;
+      }
+      update(dt) {
+        this.recoil = Math.max(0, this.recoil - dt * 7);
+        this.muzzleLight.intensity = Math.max(0, this.muzzleLight.intensity - dt * 25);
+        if (this.mesh) {
+          this.mesh.position.z = -0.5 - this.recoil * 0.15;
+          this.mesh.position.y = -0.17 + this.recoil * 0.08;
+        }
+      }
+      getAmmoText() { return `${this.ammo[this.type]} / ${this.reserve[this.type]}`; }
+    }
+
+    function castShots(results, targets, scene, onHit) {
+      const hits = [];
+      results.forEach(r => {
+        TEMP_RAY.set(r.origin, r.dir);
+        const intersected = [];
+        targets.forEach(t => {
+          t.group.traverse(c => {
+            if (!c.isMesh) return;
+            const hl = TEMP_RAY.intersectObject(c, false);
+            hl.forEach(h => { h.target = t; h.object = c; intersected.push(h); });
+          });
+        });
+        intersected.sort((a, b) => a.distance - b.distance);
+        if (intersected.length) {
+          const h = intersected[0];
+          const normal = h.face ? h.face.normal.clone() : (h.normal || new THREE.Vector3(0,1,0)).clone();
+          const hit = { target: h.target, point: h.point.clone(), normal, distance: h.distance, object: h.object };
+          hits.push(hit);
+          if (onHit) onHit(h.target, h.point.clone(), normal, h.object);
+        }
+      });
+      return hits;
+    }
+
+    function spawnMuzzleFlash(weapon, scene) {
+      const flash = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 10), new THREE.MeshBasicMaterial({ color: 0xffaa00 }));
+      flash.position.copy(weapon.muzzleLight.position); scene.add(flash);
+      const start = performance.now();
+      const animate = () => {
+        const t = (performance.now() - start) / 100;
+        if (t > 1) { scene.remove(flash); flash.geometry.dispose(); flash.material.dispose(); return; }
+        flash.scale.setScalar(1 + t * 2); flash.material.opacity = 1 - t;
+        requestAnimationFrame(animate);
+      };
+      animate();
+    }
+
+    function spawnShellEject(weapon, scene) {
+      const shell = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.13, 8), new THREE.MeshStandardMaterial({ color: 0xd4af37, roughness: 0.3 }));
+      shell.position.copy(weapon.mesh.position); shell.position.x += 0.09;
+      shell.rotation.x = Math.random() * Math.PI; scene.add(shell);
+      const vel = new THREE.Vector3((Math.random()-0.5)*2, 4 + Math.random()*3, -1 - Math.random());
+      const start = performance.now();
+      const animate = () => {
+        const t = (performance.now() - start) / 700;
+        if (t > 1) { scene.remove(shell); shell.geometry.dispose(); shell.material.dispose(); return; }
+        shell.position.addScaledVector(vel, 0.016); vel.y -= 24 * 0.016;
+        shell.rotation.x += 0.2; shell.material.opacity = 1 - t;
+        requestAnimationFrame(animate);
+      };
+      animate();
+    }
+
+    // ================= voxel.js =================
+    const VOXEL = { AIR: 0, STONE: 1, DIRT: 2, WOOD: 3, GLASS: 4, METAL: 5, CONCRETE: 6 };
+    const VOXEL_MATERIALS = {
+      [VOXEL.AIR]: null,
+      [VOXEL.STONE]: { color: 0x5a5a66, roughness: 0.9, metalness: 0.1 },
+      [VOXEL.DIRT]: { color: 0x5c4033, roughness: 1.0, metalness: 0.0 },
+      [VOXEL.WOOD]: { color: 0x8b5a2b, roughness: 0.9, metalness: 0.0 },
+      [VOXEL.GLASS]: { color: 0xadd8e6, roughness: 0.1, metalness: 0.0, transparent: true, opacity: 0.6, transmission: 0.9 },
+      [VOXEL.METAL]: { color: 0x6e6e7a, roughness: 0.3, metalness: 0.9 },
+      [VOXEL.CONCRETE]: { color: 0x88888e, roughness: 1.0, metalness: 0.05 },
+    };
+    const VOXEL_HARDNESS = { [VOXEL.AIR]: 0, [VOXEL.STONE]: 60, [VOXEL.DIRT]: 15, [VOXEL.WOOD]: 25, [VOXEL.GLASS]: 5, [VOXEL.METAL]: 100, [VOXEL.CONCRETE]: 45 };
+    const CHUNK_SIZE = 16;
+    const CHUNK_HEIGHT = 64;
+    const VOXEL_SIZE = 1;
+    const faces = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+
+    class VoxelWorld {
+      constructor(scene) {
+        this.scene = scene;
+        this.chunks = new Map(); this.chunkMeshes = new Map();
+        this.voxelSize = VOXEL_SIZE; this.chunkSize = CHUNK_SIZE; this.chunkHeight = CHUNK_HEIGHT;
+        this.debris = [];
+        this.debrisGroup = new THREE.Group(); scene.add(this.debrisGroup);
+        this._tmpV = new THREE.Vector3(); this._matCache = new Map();
+      }
+      chunkKey(cx, cy, cz) { return `${cx},${cy},${cz}`; }
+      getChunk(cx, cy, cz, create = true) {
+        const key = this.chunkKey(cx, cy, cz);
+        let chunk = this.chunks.get(key);
+        if (!chunk && create) {
+          chunk = new Chunk(cx, cy, cz, this);
+          this.chunks.set(key, chunk); this.buildMesh(chunk);
+        }
+        return chunk;
+      }
+      worldToChunk(wx, wy, wz) {
+        return {
+          cx: Math.floor(wx / CHUNK_SIZE), cy: Math.floor(wy / CHUNK_HEIGHT), cz: Math.floor(wz / CHUNK_SIZE),
+          lx: ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE,
+          ly: ((wy % CHUNK_HEIGHT) + CHUNK_HEIGHT) % CHUNK_HEIGHT,
+          lz: ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE,
+        };
+      }
+      getVoxel(wx, wy, wz) {
+        const { cx, cy, cz, lx, ly, lz } = this.worldToChunk(wx, wy, wz);
+        const chunk = this.chunks.get(this.chunkKey(cx, cy, cz));
+        if (!chunk) return VOXEL.AIR;
+        return chunk.get(lx, ly, lz);
+      }
+      setVoxel(wx, wy, wz, type) {
+        const { cx, cy, cz, lx, ly, lz } = this.worldToChunk(wx, wy, wz);
+        let chunk = this.chunks.get(this.chunkKey(cx, cy, cz));
+        if (!chunk) {
+          if (type === VOXEL.AIR) return;
+          chunk = this.getChunk(cx, cy, cz, true);
+        }
+        chunk.set(lx, ly, lz, type);
+        this.markDirty(chunk);
+        this.updateNeighbors(wx, wy, wz, chunk);
+        return chunk;
+      }
+      markDirty(chunk) { chunk.dirty = true; }
+      updateNeighbors(wx, wy, wz, chunk) {
+        const dirs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+        dirs.forEach(([dx,dy,dz]) => {
+          const c = this.worldToChunk(wx + dx, wy + dy, wz + dz);
+          const nc = this.chunks.get(this.chunkKey(c.cx, c.cy, c.cz));
+          if (nc) nc.dirty = true;
+        });
+        chunk.dirty = true;
+      }
+      buildMesh(chunk) {
+        const old = this.chunkMeshes.get(chunk.key());
+        if (old) { this.scene.remove(old); old.geometry.dispose(); old.material.dispose(); this.chunkMeshes.delete(chunk.key()); }
+        const geometry = new THREE.BufferGeometry();
+        const positions = []; const normals = []; const colors = []; const uvs = [];
+        const mat = VOXEL_MATERIALS[chunk.type] || null;
+        for (let y = 0; y < CHUNK_HEIGHT; y++) {
+          for (let z = 0; z < CHUNK_SIZE; z++) {
+            for (let x = 0; x < CHUNK_SIZE; x++) {
+              const t = chunk.get(x, y, z);
+              if (t === VOXEL.AIR) continue;
+              const m = VOXEL_MATERIALS[t];
+              if (!m) continue;
+              for (let f = 0; f < 6; f++) {
+                const n = faces[f];
+                const nx = x + n[0], ny = y + n[1], nz = z + n[2];
+                const nt = this.getVoxelAtChunk(chunk, nx, ny, nz);
+                if (nt === t && (!m.transparent)) continue;
+                this.addFace(geometry, x, y, z, n[0], n[1], n[2], t, positions, normals, colors, uvs);
+              }
+            }
+          }
+        }
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        const material = new THREE.MeshStandardMaterial({
+          vertexColors: true, roughness: mat.roughness, metalness: mat.metalness,
+          transparent: !!mat.transparent, opacity: mat.opacity !== undefined ? mat.opacity : 1,
+          transmission: mat.transmission, side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = false;
+        this.scene.add(mesh);
+        this.chunkMeshes.set(chunk.key(), mesh);
+        chunk.dirty = false; chunk.mesh = mesh;
+      }
+      getVoxelAtChunk(chunk, x, y, z) {
+        if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
+          const wx = chunk.cx * CHUNK_SIZE + x;
+          const wy = chunk.cy * CHUNK_HEIGHT + y;
+          const wz = chunk.cz * CHUNK_SIZE + z;
+          return this.getVoxel(wx, wy, wz);
+        }
+        return chunk.get(x, y, z);
+      }
+      addFace(geometry, x, y, z, nx, ny, nz, type, positions, normals, colors, uvs) {
+        const u = new THREE.Vector3(); const v = new THREE.Vector3();
+        const normal = new THREE.Vector3(nx, ny, nz);
+        const tmp = Math.abs(nx) > 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+        u.crossVectors(normal, tmp).normalize();
+        v.crossVectors(normal, u).normalize();
+        const base = new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5);
+        const half = 0.5;
+        const corners = [
+          base.clone().addScaledVector(u, -half).addScaledVector(v, -half),
+          base.clone().addScaledVector(u,  half).addScaledVector(v, -half),
+          base.clone().addScaledVector(u,  half).addScaledVector(v,  half),
+          base.clone().addScaledVector(u, -half).addScaledVector(v,  half),
+        ];
+        const c = VOXEL_MATERIALS[type].color;
+        const r = (c >> 16 & 255) / 255;
+        const g = (c >> 8 & 255) / 255;
+        const b = (c & 255) / 255;
+        const tri = [[0,1,2],[0,2,3]];
+        tri.forEach(([a,b2,c2]) => {
+          [a,b2,c2].forEach(idx => {
+            const p = corners[idx];
+            positions.push(p.x, p.y, p.z);
+            normals.push(nx, ny, nz);
+            colors.push(r, g, b);
+            uvs.push((p.x - Math.floor(p.x)), (p.z - Math.floor(p.z)));
+          });
+        });
+      }
+      explode(wx, wy, wz, radius, power) {
+        const r2 = radius * radius; const affected = [];
+        const min = Math.floor(wx - radius) - 1;
+        const max = Math.ceil(wx + radius) + 1;
+        const miny = Math.floor(wy - radius) - 1;
+        const maxy = Math.ceil(wy + radius) + 1;
+        const minz = Math.floor(wz - radius) - 1;
+        const maxz = Math.ceil(wz + radius) + 1;
+        const center = new THREE.Vector3(wx, wy, wz);
+        for (let y = miny; y <= maxy; y++) {
+          for (let z = minz; z <= maxz; z++) {
+            for (let x = min; x <= max; x++) {
+              const d2 = (x - wx)*(x - wx) + (y - wy)*(y - wy) + (z - wz)*(z - wz);
+              if (d2 > r2) continue;
+              const t = this.getVoxel(x, y, z);
+              if (t === VOXEL.AIR) continue;
+              const hardness = VOXEL_HARDNESS[t];
+              const dist = Math.sqrt(d2);
+              const damage = power * Math.max(0, 1 - dist / radius);
+              if (damage >= hardness) {
+                this.setVoxel(x, y, z, VOXEL.AIR);
+                affected.push({ x, y, z, type: t });
+              }
+            }
+          }
+        }
+        affected.forEach(a => { this.spawnDebris(a.x + 0.5, a.y + 0.5, a.z + 0.5, a.type, center); });
+        return affected.length;
+      }
+      spawnDebris(x, y, z, type, origin) {
+        const m = VOXEL_MATERIALS[type];
+        const geo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+        const mat = new THREE.MeshStandardMaterial({
+          color: m.color, roughness: m.roughness, metalness: m.metalness,
+          transparent: m.transparent, opacity: m.opacity, transmission: m.transmission,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(x, y, z); mesh.castShadow = true; mesh.receiveShadow = true;
+        this.debrisGroup.add(mesh);
+        const dir = new THREE.Vector3(x, y, z).sub(origin).normalize();
+        const spread = new THREE.Vector3((Math.random()-0.5)*0.5,(Math.random()-0.5)*0.5,(Math.random()-0.5)*0.5);
+        const vel = dir.clone().add(spread).normalize().multiplyScalar(8 + Math.random() * 10);
+        const angular = new THREE.Vector3(Math.random()*4, Math.random()*4, Math.random()*4);
+        this.debris.push({ mesh, vel, angular, life: 5 + Math.random() * 5, type, disposeAssets: true });
+      }
+      updateDebris(dt) {
+        const gravity = new THREE.Vector3(0, -28, 0);
+        for (let i = this.debris.length - 1; i >= 0; i--) {
+          const d = this.debris[i];
+          d.vel.addScaledVector(gravity, dt);
+          d.vel.multiplyScalar(0.96);
+          d.mesh.position.addScaledVector(d.vel, dt);
+          d.mesh.rotation.x += d.angular.x * dt;
+          d.mesh.rotation.y += d.angular.y * dt;
+          d.mesh.rotation.z += d.angular.z * dt;
+          d.life -= dt;
+          if (d.life <= 0) {
+            this.debrisGroup.remove(d.mesh);
+            if (d.disposeAssets) { d.mesh.geometry.dispose(); d.mesh.material.dispose(); }
+            this.debris.splice(i, 1);
+          }
+        }
+      }
+      update() {
+        this.chunks.forEach(chunk => { if (chunk.dirty) this.buildMesh(chunk); });
+        this.updateDebris(1/60);
+      }
+    }
+
+    class Chunk {
+      constructor(cx, cy, cz, world) {
+        this.cx = cx; this.cy = cy; this.cz = cz; this.world = world;
+        this.key = () => world.chunkKey(cx, cy, cz);
+        this.data = new Uint8Array(CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE);
+        this.dirty = true; this.mesh = null;
+        for (let z = 0; z < CHUNK_SIZE; z++) {
+          for (let x = 0; x < CHUNK_SIZE; x++) { this.set(x, 0, z, VOXEL.STONE); }
+        }
+      }
+      idx(x, y, z) { return (y * CHUNK_SIZE + z) * CHUNK_SIZE + x; }
+      get(x, y, z) {
+        if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) return VOXEL.AIR;
+        return this.data[this.idx(x, y, z)];
+      }
+      set(x, y, z, v) {
+        if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) return;
+        this.data[this.idx(x, y, z)] = v;
+      }
+    }
+
+    // ================= liquid.js =================
+    const LIQUID_GRAVITY = new THREE.Vector3(0, -24, 0);
+    const DRAG = 0.98;
+    const REST_DIST = 0.55;
+    const PRESSURE = 0.06;
+    const VISCOSITY = 0.15;
+    const SOLVER_ITERS = 6;
+    const PARTICLE_RADIUS = 0.18;
+    const MAX_PARTICLES = 3000;
+
+    class LiquidSystem {
+      constructor(scene, options = {}) {
+        this.scene = scene;
+        this.color = options.color || 0x2a6a9a;
+        this.emissive = options.emissive || 0x000000;
+        this.maxParticles = options.maxParticles || MAX_PARTICLES;
+        this.particles = []; this.meshes = [];
+        this.group = new THREE.Group(); scene.add(this.group);
+        this.geo = new THREE.SphereGeometry(PARTICLE_RADIUS, 8, 8);
+        this.mat = new THREE.MeshStandardMaterial({
+          color: this.color, emissive: this.emissive, roughness: 0.2, metalness: 0.1,
+          transparent: options.transparent || false,
+          opacity: options.opacity !== undefined ? options.opacity : 0.9,
+          transmission: options.transmission || 0,
+        });
+      }
+      spawn(x, y, z, count, vel = null) {
+        for (let i = 0; i < count && this.particles.length < this.maxParticles; i++) {
+          const p = {
+            pos: new THREE.Vector3(x + (Math.random()-0.5)*0.2, y + (Math.random()-0.5)*0.2, z + (Math.random()-0.5)*0.2),
+            vel: vel ? vel.clone() : new THREE.Vector3((Math.random()-0.5)*2, 2 + Math.random()*3, (Math.random()-0.5)*2),
+            life: 20 + Math.random()*10,
+          };
+          const mesh = new THREE.Mesh(this.geo, this.mat);
+          mesh.position.copy(p.pos); mesh.castShadow = true; mesh.receiveShadow = true;
+          this.group.add(mesh); this.particles.push(p); this.meshes.push(mesh);
+        }
+      }
+      spawnBlood(x, y, z, count, dir) {
+        for (let i = 0; i < count; i++) {
+          const spread = new THREE.Vector3((Math.random()-0.5)*0.8,(Math.random()-0.5)*0.8,(Math.random()-0.5)*0.8);
+          const v = dir.clone().add(spread).normalize().multiplyScalar(6 + Math.random()*12);
+          const p = { pos: new THREE.Vector3(x,y,z), vel: v, life: 3 + Math.random()*3 };
+          this.particles.push(p);
+          const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.05 + Math.random()*0.04, 6, 6),
+            new THREE.MeshBasicMaterial({ color: 0x6a0a0a }));
+          mesh.position.copy(p.pos); this.group.add(mesh); this.meshes.push(mesh);
+        }
+      }
+      getNeighbors(index, grid, cellSize) {
+        const p = this.particles[index];
+        const cell = Math.floor(cellSize);
+        const cx = Math.floor(p.pos.x / cell), cy = Math.floor(p.pos.y / cell), cz = Math.floor(p.pos.z / cell);
+        const neighbors = [];
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+              const key = `${cx+dx},${cy+dy},${cz+dz}`;
+              const bucket = grid.get(key);
+              if (bucket) bucket.forEach(j => { if (j !== index) neighbors.push(j); });
+            }
+          }
+        }
+        return neighbors;
+      }
+      step(dt) {
+        const cellSize = REST_DIST * 2;
+        const grid = new Map();
+        this.particles.forEach((p, i) => {
+          const key = `${Math.floor(p.pos.x/cellSize)},${Math.floor(p.pos.y/cellSize)},${Math.floor(p.pos.z/cellSize)}`;
+          if (!grid.has(key)) grid.set(key, []);
+          grid.get(key).push(i);
+        });
+        this.particles.forEach(p => {
+          p.vel.addScaledVector(LIQUID_GRAVITY, dt);
+          p.vel.multiplyScalar(DRAG);
+          p.pos.addScaledVector(p.vel, dt);
+          if (p.pos.y < PARTICLE_RADIUS) {
+            p.pos.y = PARTICLE_RADIUS;
+            p.vel.y = Math.abs(p.vel.y) * 0.3;
+            p.vel.x *= 0.5; p.vel.z *= 0.5;
+          }
+        });
+        for (let it = 0; it < SOLVER_ITERS; it++) {
+          for (let i = 0; i < this.particles.length; i++) {
+            const pi = this.particles[i];
+            let dx = 0, dy = 0, dz = 0; let count = 0;
+            this.getNeighbors(i, grid, cellSize).forEach(j => {
+              const pj = this.particles[j];
+              const d = new THREE.Vector3().subVectors(pj.pos, pi.pos);
+              const dist = d.length();
+              if (dist > 0 && dist < REST_DIST) {
+                const push = (REST_DIST - dist) / dist * PRESSURE;
+                dx += d.x * push; dy += d.y * push; dz += d.z * push; count++;
+              }
+            });
+            if (count > 0) pi.vel.add(new THREE.Vector3(dx/count, dy/count, dz/count));
+            this.getNeighbors(i, grid, cellSize).forEach(j => {
+              const pj = this.particles[j];
+              const dv = new THREE.Vector3().subVectors(pj.vel, pi.vel);
+              pi.vel.addScaledVector(dv, VISCOSITY * dt);
+            });
+          }
+          this.particles.forEach(p => p.pos.addScaledVector(p.vel, dt));
+        }
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+          const p = this.particles[i]; const m = this.meshes[i];
+          m.position.copy(p.pos);
+          p.life -= dt;
+          m.scale.setScalar(Math.max(0, p.life / 20));
+          if (p.life <= 0) {
+            this.group.remove(m); m.geometry.dispose(); m.material.dispose();
+            this.particles.splice(i, 1); this.meshes.splice(i, 1);
+          }
+        }
+      }
+    }
+
+    // ================= trauma.js =================
+    const BLOOD_COLOR = 0x6a0a0a;
+
+    class BloodDecal {
+      constructor(scene) {
+        this.scene = scene; this.decals = []; this.geometryPool = []; this._tmp = new THREE.Vector3();
+      }
+      add(point, normal, size = 0.35, color = BLOOD_COLOR) {
+        const geo = new THREE.CylinderGeometry(size * 0.5, size * 0.5, 0.02, 24, 1);
+        geo.rotateX(Math.PI / 2);
+        const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(point); mesh.lookAt(point.clone().add(normal));
+        mesh.translateZ(0.011);
+        this.scene.add(mesh);
+        const d = { mesh, pos: point.clone(), normal: normal.clone(), age: 0, life: 30 + Math.random() * 20 };
+        this.decals.push(d);
+        return d;
+      }
+      update(dt) {
+        for (let i = this.decals.length - 1; i >= 0; i--) {
+          const d = this.decals[i];
+          d.age += dt;
+          const t = Math.min(1, d.age / d.life);
+          d.mesh.material.opacity = 1 - t;
+          if (t >= 1) {
+            this.scene.remove(d.mesh); d.mesh.geometry.dispose(); d.mesh.material.dispose();
+            this.decals.splice(i, 1);
+          }
+        }
+      }
+    }
+
+    class FractureSystem {
+      constructor(scene) {
+        this.scene = scene; this.fractures = []; this.shards = [];
+        this.shardGroup = new THREE.Group(); scene.add(this.shardGroup);
+      }
+      fracture(point, normal, force, boneType = 'limb') {
+        const d = { pos: point.clone(), normal: normal.clone(), boneType, age: 0, life: 20 };
+        this.fractures.push(d);
+        this.spawnShards(point, normal, force, boneType);
+        return d;
+      }
+      spawnShards(point, normal, force, boneType) {
+        const count = boneType === 'skull' ? 12 : 6;
+        const color = 0xeae8e0;
+        for (let i = 0; i < count; i++) {
+          const size = 0.04 + Math.random() * 0.08;
+          const geo = new THREE.BoxGeometry(size, size, size);
+          const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.position.copy(point); mesh.castShadow = true; mesh.receiveShadow = true;
+          this.shardGroup.add(mesh);
+          const spread = new THREE.Vector3((Math.random()-0.5)*1.5,(Math.random()-0.5)*1.5,(Math.random()-0.5)*1.5);
+          const dir = normal.clone().add(spread).normalize();
+          const vel = dir.multiplyScalar(4 + Math.random() * force * 0.1);
+          const angular = new THREE.Vector3(Math.random()*6, Math.random()*6, Math.random()*6);
+          this.shards.push({ mesh, vel, angular, life: 2.5 + Math.random()*2 });
+        }
+      }
+      update(dt) {
+        const gravity = new THREE.Vector3(0, -28, 0);
+        for (let i = this.shards.length - 1; i >= 0; i--) {
+          const s = this.shards[i];
+          s.vel.addScaledVector(gravity, dt); s.vel.multiplyScalar(0.94);
+          s.mesh.position.addScaledVector(s.vel, dt);
+          s.mesh.rotation.x += s.angular.x * dt;
+          s.mesh.rotation.y += s.angular.y * dt;
+          s.mesh.rotation.z += s.angular.z * dt;
+          s.life -= dt;
+          if (s.life <= 0) {
+            this.shardGroup.remove(s.mesh); s.mesh.geometry.dispose(); s.mesh.material.dispose();
+            this.shards.splice(i, 1);
+          }
+        }
+        for (let i = this.fractures.length - 1; i >= 0; i--) {
+          this.fractures[i].age += dt;
+          if (this.fractures[i].age > this.fractures[i].life) this.fractures.splice(i, 1);
+        }
+      }
+    }
+
+    class TraumaSystem {
+      constructor(scene) {
+        this.scene = scene;
+        this.decalSystem = new BloodDecal(scene);
+        this.fractureSystem = new FractureSystem(scene);
+        this.woundHistory = [];
+      }
+      registerDummy(dummy) { dummy.trauma = this; }
+      onHit(hitPoint, hitNormal, damage, weaponType) {
+        const size = 0.2 + damage * 0.005;
+        this.decalSystem.add(hitPoint, hitNormal, size);
+        const dir = hitNormal.clone().negate();
+        if (damage > 35 && Math.random() < 0.6) {
+          this.fractureSystem.fracture(hitPoint, hitNormal, damage, 'limb');
+        }
+        if (damage > 70 && Math.random() < 0.4) {
+          this.fractureSystem.fracture(hitPoint, hitNormal, damage, 'skull');
+        }
+      }
+      update(dt) { this.decalSystem.update(dt); this.fractureSystem.update(dt); }
+    }
+
+    // ================= spawn.js =================
+    const PROPS = {
+      crate: { size: [1,1,1], color: 0x8b5a2b, hardness: 25, mass: 8 },
+      barrel: { size: [0.7,1.1,0.7], color: 0x5a2a00, hardness: 20, mass: 6 },
+      concreteBlock: { size: [1.2,1.2,1.2], color: 0x88888e, hardness: 45, mass: 20 },
+      glassPane: { size: [1,1,0.15], color: 0xadd8e6, hardness: 5, mass: 2, transparent: true },
+      metalBeam: { size: [2,0.3,0.3], color: 0x6e6e7a, hardness: 100, mass: 14 },
+    };
+
+    class Prop {
+      constructor(scene, type, x, y, z, voxelWorld) {
+        this.scene = scene; this.voxelWorld = voxelWorld; this.type = type;
+        const def = PROPS[type] || PROPS.crate;
+        this.def = def;
+        this.health = 100; this.hardness = def.hardness; this.mass = def.mass; this.dead = false;
+        this.group = new THREE.Group();
+        this.group.position.set(x, y, z);
+        scene.add(this.group);
+        this.parts = [];
+        this.buildMesh();
+        this.pos = new THREE.Vector3(x, y, z);
+        this.prevPos = this.pos.clone();
+        this.vel = new THREE.Vector3();
+        this.invMass = 1 / this.mass;
+        this.radius = Math.max(...def.size) * 0.6;
+        this.constraints = [];
+      }
+      buildMesh() {
+        const def = this.def; const [sx, sy, sz] = def.size;
+        const geo = new THREE.BoxGeometry(sx, sy, sz);
+        const mat = new THREE.MeshStandardMaterial({
+          color: def.color, roughness: 0.8, metalness: def.transparent ? 0 : 0.4,
+          transparent: !!def.transparent, opacity: def.transparent ? 0.55 : 1,
+          transmission: def.transparent ? 0.85 : 0,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        this.group.add(mesh);
+        this.mesh = mesh; this.parts.push(mesh);
+        this.chunkGeos = [];
+        const cx = Math.ceil(sx / 0.4), cy = Math.ceil(sy / 0.4), cz = Math.ceil(sz / 0.4);
+        for (let iy = 0; iy < cy; iy++) {
+          for (let ix = 0; ix < cx; ix++) {
+            for (let iz = 0; iz < cz; iz++) {
+              const cg = new THREE.BoxGeometry(0.38, 0.38, 0.38);
+              const cm = new THREE.MeshStandardMaterial({ color: def.color, roughness: 0.8, metalness: 0.4 });
+              const cmesh = new THREE.Mesh(cg, cm);
+              cmesh.position.set((ix - cx/2)*0.4 + 0.2, (iy - cy/2)*0.4 + 0.2, (iz - cz/2)*0.4 + 0.2);
+              this.chunkGeos.push({ mesh: cmesh, geo: cg, mat: cm });
+            }
+          }
+        }
+      }
+      applyDamage(damage, hitPoint, hitNormal) {
+        if (this.dead) return;
+        this.health -= damage;
+        const dir = hitNormal.clone().negate();
+        this.vel.addScaledVector(dir, damage * 0.6);
+        if (this.health <= 0) this.destroy(hitPoint);
+      }
+      destroy(hitPoint) {
+        if (this.dead) return;
+        this.dead = true;
+        this.mesh.visible = false;
+        const center = this.group.position.clone();
+        this.chunkGeos.forEach(c => {
+          const m = c.mesh.clone();
+          m.material = c.mat.clone();
+          m.position.copy(this.group.position).add(c.mesh.position);
+          m.castShadow = true; m.receiveShadow = true;
+          this.scene.add(m);
+          const dir = new THREE.Vector3().subVectors(m.position, hitPoint || center).normalize();
+          const vel = dir.multiplyScalar(6 + Math.random() * 8);
+          const angular = new THREE.Vector3(Math.random()*4, Math.random()*4, Math.random()*4);
+          this.voxelWorld.debris.push({ mesh: m, geo: c.geo, mat: c.mat, vel, angular, life: 6 + Math.random()*4, isPropChunk: true, disposeAssets: false });
+        });
+      }
+      step(dt) {
+        if (this.dead) return;
+        const gravity = new THREE.Vector3(0, -28, 0);
+        this.vel.addScaledVector(gravity, dt);
+        this.vel.multiplyScalar(0.97);
+        this.pos.addScaledVector(this.vel, dt);
+        this.group.position.copy(this.pos);
+        if (this.pos.y < 0.4 + this.radius) {
+          this.pos.y = 0.4 + this.radius;
+          this.vel.y = Math.abs(this.vel.y) * 0.35;
+          this.vel.x *= 0.5; this.vel.z *= 0.5;
+        }
+        this.constraints.forEach(c => c.solve());
+      }
+    }
+
+    class SpawnEngine {
+      constructor(scene, camera, voxelWorld) {
+        this.scene = scene; this.camera = camera; this.voxelWorld = voxelWorld;
+        this.dummies = []; this.props = []; this.weapons = []; this.liquids = [];
+      }
+      spawnDummy(x, y, z, DummyClass) {
+        const d = new DummyClass(this.scene, x, y, z);
+        this.dummies.push(d); return d;
+      }
+      spawnProp(type, x, y, z) {
+        const p = new Prop(this.scene, type, x, y, z, this.voxelWorld);
+        this.props.push(p); return p;
+      }
+      spawnLiquid(x, y, z, count, color, vel, liquidSystem) {
+        liquidSystem.spawn(x, y, z, count, vel);
+      }
+      step(dt) {
+        this.dummies.forEach(d => d.step(dt));
+        this.props.forEach(p => p.step(dt));
+        this.liquids.forEach(l => l.step(dt));
+      }
+    }
+
+    // ================= joints.js =================
+    class WireClass {
+      constructor(start, end, segments, restSegLen) {
+        this.parts = []; this.constraints = [];
+        this.anchors = { start: start.clone(), end: end.clone() };
+        this.build(start, end, segments, restSegLen);
+      }
+      build(start, end, segments, restSegLen) {
+        const step = new THREE.Vector3().subVectors(end, start).divideScalar(segments);
+        let cur = start.clone();
+        for (let i = 0; i <= segments; i++) {
+          const staticEnd = (i === 0 || i === segments);
+          const part = {
+            pos: cur.clone(), prevPos: cur.clone(),
+            invMass: staticEnd ? 0 : 1,
+            applyImpulse(v) { if (this.invMass === 0) return; this.pos.add(v); this.prevPos.add(v); },
+          };
+          this.parts.push(part);
+          if (i > 0) {
+            this.constraints.push({ a: this.parts[i-1], b: part, restLength: restSegLen, stiffness: 1.0, broken: false });
+          }
+          cur.add(step);
+        }
+      }
+      update(dt) {
+        this.parts.forEach((p, i) => {
+          if (i === 0 || i === this.parts.length - 1) return;
+          const vel = new THREE.Vector3().subVectors(p.pos, p.prevPos).multiplyScalar(0.99);
+          p.prevPos.copy(p.pos);
+          p.pos.addScaledVector(vel, dt);
+          p.pos.addScaledVector(new THREE.Vector3(0, -28, 0), dt * dt);
+        });
+        for (let it = 0; it < 8; it++) {
+          this.parts[0].pos.copy(this.anchors.start);
+          this.parts[this.parts.length-1].pos.copy(this.anchors.end);
+          this.constraints.forEach(c => {
+            if (c.broken) return;
+            const d = new THREE.Vector3().subVectors(c.b.pos, c.a.pos);
+            const dist = d.length();
+            if (dist === 0) return;
+            const diff = (dist - c.restLength) / dist;
+            const off = d.clone().multiplyScalar(diff * c.stiffness / (c.a.invMass + c.b.invMass));
+            if (c.a.invMass > 0) c.a.pos.sub(off.clone().multiplyScalar(c.a.invMass));
+            if (c.b.invMass > 0) c.b.pos.add(off.clone().multiplyScalar(c.b.invMass));
+          });
+        }
+      }
+    }
+
+    // ================= world.js =================
+    const canvas = document.getElementById('glcanvas');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0f);
+    scene.fog = new THREE.FogExp2(0x0a0a0f, 0.012);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 1.6, 3);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.35); scene.add(ambient);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+    dir.position.set(12, 18, 8);
+    dir.castShadow = true;
+    dir.shadow.mapSize.width = 2048; dir.shadow.mapSize.height = 2048;
+    dir.shadow.camera.near = 0.5; dir.shadow.camera.far = 60;
+    dir.shadow.camera.left = -25; dir.shadow.camera.right = 25;
+    dir.shadow.camera.top = 25; dir.shadow.camera.bottom = -25;
+    scene.add(dir);
+    const fill = new THREE.PointLight(0x4060ff, 0.35); fill.position.set(-10, 5, -10); scene.add(fill);
+
+    const groundGeo = new THREE.PlaneGeometry(300, 300);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x101018, roughness: 0.85 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+    scene.add(ground);
+    const grid = new THREE.GridHelper(300, 80, 0x1f1f33, 0x0e0e16); scene.add(grid);
+
+    const voxelWorld = new VoxelWorld(scene);
+    const generateMap = () => {
+      for (let z = -10; z <= 10; z++) {
+        for (let x = -10; x <= 10; x++) { voxelWorld.setVoxel(x, 0, z, VOXEL.STONE); }
+      }
+      for (let y = 1; y <= 3; y++) {
+        for (let z = -5; z <= 5; z++) {
+          for (let x = -5; x <= 5; x++) {
+            if (Math.abs(x) + Math.abs(z) + y <= 7) voxelWorld.setVoxel(x, y, z, VOXEL.DIRT);
+          }
+        }
+      }
+      for (let y = 1; y <= 3; y++) {
+        for (let z = -3; z <= 3; z++) {
+          for (let x = -3; x <= 3; x++) {
+            if (x === -3 || x === 3 || z === -3 || z === 3 || y === 3) voxelWorld.setVoxel(x, y, z, VOXEL.CONCRETE);
+          }
+        }
+      }
+    };
+    generateMap();
+
+    // ================= main.js =================
+    const weapon = new Weapon(camera, canvas);
+    scene.add(weapon.mesh); scene.add(weapon.muzzleLight);
+
+    const trauma = new TraumaSystem(scene);
+    const spawnEngine = new SpawnEngine(scene, camera, voxelWorld);
+
+    const water = new LiquidSystem(scene, { color: 0x2a6a9a, opacity: 0.85, transmission: 0.9 });
+    const bloodLiquid = new LiquidSystem(scene, { color: 0x6a0a0a, opacity: 0.95 });
+
+    const dummies = [];
+    const props = [];
+    let pointerLocked = false;
+    let isXray = false;
+    let grabMode = false;
+    let buildWire = false;
+    let liquidType = 'water';
+    const wireAnchors = [];
+    const wires = [];
+
+    const keys = {};
+    const playerPos = new THREE.Vector3(0, 1.6, 3);
+
+    const UI = {
+      weaponName: document.getElementById('weaponName'),
+      ammo: document.getElementById('ammo'),
+      xrayMode: document.getElementById('xrayMode'),
+      dummyCount: document.getElementById('dummyCount'),
+      overlay: document.getElementById('overlay'),
+      startBtn: document.getElementById('startBtn'),
+    };
+
+    function onPointerLockChange() {
+      pointerLocked = document.pointerLockElement === canvas;
+      document.getElementById('lockHint')?.classList.toggle('hidden', pointerLocked);
+    }
+    document.addEventListener('pointerlockchange', onPointerLockChange);
+
+    canvas.addEventListener('click', () => {
+      if (!pointerLocked) canvas.requestPointerLock();
+    });
+
+    window.addEventListener('keydown', e => {
+      keys[e.code] = true;
+      if (e.code === 'KeyN') spawnDummy();
+      if (e.code === 'KeyC') clearDummies();
+      if (e.code === 'KeyX') toggleXray();
+      if (e.code === 'KeyE') toggleGrab();
+      if (e.code === 'KeyR' && !e.ctrlKey) resetRagdolls();
+      if (e.code === 'Digit1') weapon.setType('pistol');
+      if (e.code === 'Digit2') weapon.setType('shotgun');
+      if (e.code === 'Digit3') weapon.setType('rifle');
+      if (e.code === 'Digit4') weapon.setType('sniper');
+      if (e.code === 'Digit5') weapon.setType('smg');
+      if (e.code === 'KeyR' && e.ctrlKey) weapon.reload();
+      if (e.code === 'KeyP') spawnProp('crate');
+      if (e.code === 'KeyB') spawnProp('barrel');
+      if (e.code === 'KeyV') spawnProp('concreteBlock');
+      if (e.code === 'KeyG') spawnProp('glassPane');
+      if (e.code === 'KeyM') spawnProp('metalBeam');
+      if (e.code === 'KeyL') spawnLiquid();
+      if (e.code === 'KeyJ') toggleWire();
+      if (e.code === 'KeyK') clearWires();
+      if (e.code === 'Key1' && e.ctrlKey) { liquidType = 'water'; updateHUD(); }
+      if (e.code === 'Key2' && e.ctrlKey) { liquidType = 'blood'; updateHUD(); }
+      updateHUD();
+    });
+    window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+    window.addEventListener('mousedown', e => {
+      if (!pointerLocked) return;
+      if (e.button === 0) {
+        if (grabMode) grabUnderCrosshair();
+        else if (buildWire) placeWireAnchor();
+        else fireWeapon();
+      } else if (e.button === 2 && buildWire) {
+        connectLastWire();
+      }
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function spawnDummy() {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 3 + Math.random() * 4;
+      const x = playerPos.x + Math.sin(angle) * dist;
+      const z = playerPos.z + Math.cos(angle) * dist;
+      const d = new Dummy(scene, x, 0.6, z);
+      trauma.registerDummy(d);
+      dummies.push(d);
+      updateHUD();
+    }
+
+    function clearDummies() {
+      dummies.forEach(d => d.dispose());
+      dummies.length = 0;
+      updateHUD();
+    }
+
+    function spawnProp(type) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 4 + Math.random() * 3;
+      const x = playerPos.x + Math.sin(angle) * dist;
+      const z = playerPos.z + Math.cos(angle) * dist;
+      const p = new Prop(scene, type, x, 1.2, z, voxelWorld);
+      props.push(p);
+      updateHUD();
+    }
+
+    function spawnLiquid() {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 3 + Math.random() * 2;
+      const x = playerPos.x + Math.sin(angle) * dist;
+      const z = playerPos.z + Math.cos(angle) * dist;
+      const ls = liquidType === 'water' ? water : bloodLiquid;
+      ls.spawn(x, 2.2, z, 40, new THREE.Vector3(0, 6, 0));
+    }
+
+    function toggleGrab() { grabMode = !grabMode; updateHUD(); }
+    function toggleWire() { buildWire = !buildWire; updateHUD(); }
+
+    function placeWireAnchor() {
+      const raycaster = new THREE.Raycaster();
+      raycaster.ray.origin.copy(camera.position);
+      camera.getWorldDirection(raycaster.ray.direction);
+      const target = new THREE.Vector3().copy(raycaster.ray.direction).multiplyScalar(10).add(camera.position);
+      const geo = new THREE.SphereGeometry(0.07, 12, 12);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x00d9ff });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.copy(target);
+      scene.add(mesh);
+      wireAnchors.push({ mesh, pos: target.clone() });
+      if (wireAnchors.length >= 2) connectLastWire();
+    }
+
+    function connectLastWire() {
+      if (wireAnchors.length < 2) return;
+      const a = wireAnchors[wireAnchors.length - 2];
+      const b = wireAnchors[wireAnchors.length - 1];
+      const wire = new WireClass(a.pos, b.pos, 6, 0.5);
+      wires.push(wire);
+    }
+
+    function clearWires() {
+      wires.length = 0;
+      wireAnchors.forEach(a => { scene.remove(a.mesh); a.mesh.geometry.dispose(); a.mesh.material.dispose(); });
+      wireAnchors.length = 0;
+    }
+
+    function grabUnderCrosshair() {
+      const raycaster = new THREE.Raycaster();
+      raycaster.ray.origin.copy(camera.position);
+      camera.getWorldDirection(raycaster.ray.direction);
+      let best = null, md = 12;
+      dummies.forEach(d => {
+        d.ragdoll.parts.forEach(p => {
+          const dist = raycaster.ray.distanceToPoint(p.pos);
+          if (dist < 0.4 && dist < md) { md = dist; best = { kind: 'dummy', dummy: d, part: p, pos: p.pos.clone() }; }
+        });
+      });
+      props.forEach(p => {
+        const dist = raycaster.ray.distanceToPoint(p.pos);
+        if (dist < 0.8 && dist < md) { md = dist; best = { kind: 'prop', prop: p, pos: p.pos.clone() }; }
+      });
+      if (best) {
+        if (best.kind === 'dummy') best.dummy.grab(best.pos);
+        else { best.prop._grabbing = true; best.prop._grabTarget = best.pos; }
+      }
+    }
+
+    function releaseGrab() {
+      dummies.forEach(d => d.release());
+      props.forEach(p => { p._grabbing = false; p._grabTarget = null; });
+    }
+    window.addEventListener('mouseup', e => { if (e.button === 0) releaseGrab(); });
+
+    function fireWeapon() {
+      const now = performance.now();
+      const results = weapon.fire(now);
+      if (!results) return;
+      spawnMuzzleFlash(weapon, scene);
+      spawnShellEject(weapon, scene);
+      const targets = dummies.map(d => d).concat(props.map(p => p));
+      castShots(results, targets, scene, (target, point, normal) => {
+        if (target.applyDamage) target.applyDamage(point, normal, weapon.cfg.damage, weapon.type);
+        voxelWorld.explode(point.x, point.y, point.z, 1.4, weapon.cfg.damage * 1.5);
+      });
+      updateHUD();
+    }
+
+    function toggleXray() {
+      isXray = !isXray;
+      dummies.forEach(d => d.setXray(isXray));
+      UI.xrayMode.textContent = `X-RAY: ${isXray ? 'ON' : 'OFF'}`;
+      UI.xrayMode.style.color = isXray ? '#00d9ff' : '#8a8aa0';
+    }
+
+    function resetRagdolls() {
+      dummies.forEach(d => { d.health = 100; d.dead = false; });
+    }
+
+    const TEMP_DIR = new THREE.Vector3();
+    const TEMP_RIGHT = new THREE.Vector3();
+
+    function updatePlayer(dt) {
+      const speed = 6.2;
+      const sprint = keys['ShiftLeft'] || keys['ShiftRight'] ? 1.6 : 1;
+      const moveSpeed = speed * sprint * dt;
+      camera.getWorldDirection(TEMP_DIR); TEMP_DIR.y = 0; TEMP_DIR.normalize();
+      TEMP_RIGHT.crossVectors(TEMP_DIR, new THREE.Vector3(0, 1, 0)).normalize();
+      let dx = 0, dz = 0;
+      if (keys['KeyW']) { dz -= moveSpeed; }
+      if (keys['KeyS']) { dz += moveSpeed; }
+      if (keys['KeyA']) { dx -= moveSpeed; }
+      if (keys['KeyD']) { dx += moveSpeed; }
+      playerPos.addScaledVector(TEMP_DIR, dz);
+      playerPos.addScaledVector(TEMP_RIGHT, dx);
+      playerPos.y = 1.6;
+      camera.position.copy(playerPos);
+    }
+
+    const clock = new THREE.Clock();
+    let wireLine = null;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      weapon.update(dt);
+      updatePlayer(dt);
+      voxelWorld.update();
+      water.step(dt);
+      bloodLiquid.step(dt);
+      dummies.forEach(d => d.step(dt));
+      props.forEach(p => {
+        p.step(dt);
+        if (p._grabbing && p._grabTarget) {
+          const dir = new THREE.Vector3().subVectors(p._grabTarget, p.pos);
+          p.vel.addScaledVector(dir.normalize().multiplyScalar(Math.min(dir.length()*12, 30)), dt);
+        }
+      });
+      wires.forEach(w => w.update(dt));
+      updateWireLines();
+      renderer.render(scene, camera);
+      updateHUD();
+    }
+
+    function updateWireLines() {
+      if (!wireLine) {
+        wireLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x00d9ff }));
+        scene.add(wireLine);
+      }
+      const pts = [];
+      wires.forEach(w => {
+        w.parts.forEach(p => pts.push(p.pos.x, p.pos.y, p.pos.z));
+        pts.push(NaN, NaN, NaN);
+      });
+      wireLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    }
+
+    function updateHUD() {
+      UI.weaponName.textContent = weapon.type.toUpperCase();
+      UI.ammo.textContent = weapon.getAmmoText();
+      UI.xrayMode.textContent = `X-RAY: ${isXray ? 'ON' : 'OFF'}`;
+      UI.dummyCount.textContent = `DUMMIES: ${dummies.length} | PROPS: ${props.length} | LIQUID: ${liquidType.toUpperCase()}`;
+    }
+
+    UI.startBtn.addEventListener('click', () => {
+      UI.overlay.classList.add('hidden');
+      canvas.requestPointerLock();
+      animate();
+    });
+
+    updateHUD();
+  </script>
 </body>
 </html>
