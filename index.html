@@ -58,6 +58,7 @@
       <h1>VOXEL DESTRUCTION</h1>
       <p>People Playground-inspired sandbox &bull; destructible voxel maps &bull; ragdoll trauma &bull; liquids &bull; wire machines</p>
       <button id="startBtn">ENTER SIMULATION</button>
+      <button id="dlBtn" style="margin-top:10px;padding:10px 26px;background:#1a1a2e;color:#00d9ff;border:2px solid #00d9ff;text-transform:uppercase;letter-spacing:0.12em;cursor:pointer;font-size:0.9rem;">DOWNLOAD GAME</button>
     </div>
   </div>
   <canvas id="glcanvas"></canvas>
@@ -1678,6 +1679,19 @@
     });
 
     updateHUD();
+
+    UI.dlBtn = document.getElementById('dlBtn');
+    UI.dlBtn.addEventListener('click', () => {
+      const blob = new Blob([document.documentElement.outerHTML], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'voxel-destruction-game.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
   </script>
 </body>
 </html>
