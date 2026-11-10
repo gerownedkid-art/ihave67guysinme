@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { VoxelWorld, VOXEL } from './voxel.js';
 
 export function createWorld() {
   const scene = new THREE.Scene();
@@ -44,5 +45,34 @@ export function createWorld() {
   const grid = new THREE.GridHelper(300, 80, 0x1f1f33, 0x0e0e16);
   scene.add(grid);
 
-  return { scene, camera, renderer };
+  // voxel world
+  const voxelWorld = new VoxelWorld(scene);
+  // generate a destructible map: stone floor + dirt hill + structures
+  const generateMap = () => {
+    // stone slab base
+    for (let z = -10; z <= 10; z++) {
+      for (let x = -10; x <= 10; x++) {
+        voxelWorld.setVoxel(x, 0, z, VOXEL.STONE);
+      }
+    }
+    // dirt mound
+    for (let y = 1; y <= 3; y++) {
+      for (let z = -5; z <= 5; z++) {
+        for (let x = -5; x <= 5; x++) {
+          if (Math.abs(x) + Math.abs(z) + y <= 7) voxelWorld.setVoxel(x, y, z, VOXEL.DIRT);
+        }
+      }
+    }
+    // small concrete bunker
+    for (let y = 1; y <= 3; y++) {
+      for (let z = -3; z <= 3; z++) {
+        for (let x = -3; x <= 3; x++) {
+          if (x === -3 || x === 3 || z === -3 || z === 3 || y === 3) voxelWorld.setVoxel(x, y, z, VOXEL.CONCRETE);
+        }
+      }
+    }
+  };
+  generateMap();
+
+  return { scene, camera, renderer, voxelWorld };
 }

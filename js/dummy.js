@@ -229,6 +229,9 @@ export class Dummy {
     this.grabbedPart = null;
     this.grabPoint = new THREE.Vector3();
 
+    this.trauma = null; // set by main after trauma system exists
+    this.wireConstraints = []; // wire joints attached to this dummy
+
     this.build();
     this.recalcVertexCount();
   }
@@ -463,18 +466,19 @@ export class Dummy {
     const dir = hitNormal.clone().multiplyScalar(-1);
     this.ragdoll.applyImpulseAt(hitPoint, dir, damage * 14);
 
-    // blood particles
-    const count = weaponType === 'shotgun' ? 22 : 8;
-    this.spawnBlood(hitPoint, dir, count);
-
-    // wound mesh (deformation)
-    const wound = this.createWound(hitPoint, hitNormal, damage);
-    this.wounds.push(wound);
-    this.group.add(wound.mesh);
-
-    // organ damage by region
-    const region = this.regionFromPoint(hitPoint);
-    this.damageOrgans(region, damage, weaponType);
+    // trauma system: decals, fractures, blood spray, organ damage
+    if (this.trauma) {
+      this.trauma.onHit(hitPoint, hitNormal, damage, weaponType);
+    } else {
+      // fallback blood
+      const count = weaponType === 'shotgun' ? 22 : 8;
+      this.spawnBlood(hitPoint, dir, count);
+      const wound = this.createWound(hitPoint, hitNormal, damage);
+      this.wounds.push(wound);
+      this.group.add(wound.mesh);
+      const region = this.regionFromPoint(hitPoint);
+      this.damageOrgans(region, damage, weaponType);
+    }
 
     // death check
     if (this.health <= 0) {
@@ -511,7 +515,6 @@ export class Dummy {
       this.blood.push({ p, mesh: m });
     }
   }
-
   damageOrgans(region, damage, weaponType) {
     this.organs.forEach(o => {
       if (o.damaged || o.region !== region) return;

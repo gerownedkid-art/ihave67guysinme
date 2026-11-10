@@ -100,6 +100,14 @@ export class Ragdoll {
       }
     });
   }
+  getPartAt(point) {
+    let nearest = null; let minDist = Infinity;
+    this.parts.forEach(p => {
+      const d = point.distanceTo(p.pos);
+      if (d < minDist) { minDist = d; nearest = p; }
+    });
+    return nearest;
+  }
   step(dt) {
     this.integrate(dt);
     for (let i = 0; i < SOLVER_ITERS; i++) this.solveConstraints();
